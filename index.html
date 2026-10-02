@@ -6,8 +6,9 @@
 const SUPABASE_URL='https://nvmtybadyheaxjmjjbya.supabase.co';
 const SUPABASE_KEY='sb_publishable_lkKLsmp47SMAdnWKAZiX4Q_1SJFzqFR';
 const supabaseClient=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
-const materials=['PLA','PLA+','PLA PURE','PETG','TPU','Unknown','Custom…'];
-const colors=['Black','White','Red','Blue','Green','Yellow','Orange','Purple','Pink','Grey','Brown','Gold','Silver','Copper','Natural','Multicolour','Other'];
+const defaultMaterials=['PLA','PLA+','PLA PURE','PETG','TPU','Unknown'];
+let materials=[...defaultMaterials];
+const defaultColors=['Black','White','Red','Blue','Green','Yellow','Orange','Purple','Pink','Grey','Brown','Gold','Silver','Copper','Natural','Mixed','Other']; let colors=[...defaultColors];
 let db={items:[]};
 let currentUser=null;
 let loading=false;
@@ -18,9 +19,29 @@ window.onpopstate=render;
 async function init(){
   const {data:{session}}=await supabaseClient.auth.getSession();
   currentUser=session?.user||null;
-  supabaseClient.auth.onAuthStateChange((_event,session)=>{currentUser=session?.user||null; if(currentUser) loadRecords().then(render); else render();});
-  if(currentUser) await loadRecords();
+  supabaseClient.auth.onAuthStateChange((_event,session)=>{currentUser=session?.user||null; if(currentUser) Promise.all([loadMaterials(),loadColors(),loadRecords()]).then(render); else render();});
+  if(currentUser){ await loadMaterials(); await loadColors(); await loadRecords(); }
   render();
+}
+async function loadMaterials(){
+  const {data,error}=await supabaseClient.from('filament_materials').select('id,name').order('name');
+  if(error){console.error(error); materials=[...defaultMaterials]; return;}
+  materials=(data||[]).map(x=>x.name);
+  if(!materials.length){
+    const rows=defaultMaterials.map(name=>({name,user_id:currentUser.id}));
+    const ins=await supabaseClient.from('filament_materials').insert(rows);
+    if(!ins.error) materials=[...defaultMaterials];
+  }
+}
+async function loadColors(){
+  const {data,error}=await supabaseClient.from('filament_colors').select('id,name').order('name');
+  if(error){console.error(error); colors=[...defaultColors]; return;}
+  colors=(data||[]).map(x=>x.name);
+  if(!colors.length){
+    const rows=defaultColors.map(name=>({name,user_id:currentUser.id}));
+    const ins=await supabaseClient.from('filament_colors').insert(rows);
+    if(!ins.error) colors=[...defaultColors];
+  }
 }
 async function loadRecords(){
   loading=true;
@@ -35,14 +56,27 @@ function login(message=''){
 }
 async function signIn(){let email=document.getElementById('loginEmail').value.trim(),password=document.getElementById('loginPassword').value;if(!email||!password){login('Please enter your email and password.');return}let b=document.querySelector('.button');b.disabled=true;b.textContent='Signing in…';const {error}=await supabaseClient.auth.signInWithPassword({email,password});if(error){login(error.message);}}
 async function signOut(){await supabaseClient.auth.signOut();}
-function home(){document.getElementById('app').innerHTML=`<div class="top"><div><div class="title">Filament Vault</div><div class="count">${db.items.length} filament${db.items.length===1?'':'s'}</div></div><button class="back" onclick="signOut()">Sign out</button></div><div class="actions"><button class="button" onclick="add()">＋ Add Filament</button><button class="button secondary" onclick="showUrl(db.items[0]?.id||'FIL-001')">NFC URL</button></div><div class="card"><input class="search" id="search" placeholder="Search material, colour or brand…" oninput="list()"></div><div id="list"></div><div class="footer">Your filament records are stored securely in Supabase.</div>`;list()}
+function home(){document.getElementById('app').innerHTML=`<div class="top"><div><div class="title">Filament Vault</div><div class="count">${db.items.length} filament${db.items.length===1?'':'s'}</div></div><button class="back" onclick="signOut()">Sign out</button></div><div class="actions"><button class="button" onclick="add()">＋ Add Filament</button><button class="button secondary" onclick="showUrl(db.items[0]?.id||'FIL-001')">NFC URL</button></div><div class="actions"><button class="button secondary" onclick="manageMaterials()">⚙️ Materials</button></div><div class="card"><input class="search" id="search" placeholder="Search material, colour or brand…" oninput="list()"></div><div id="list"></div><div class="footer">Your filament records are stored securely in Supabase.</div>`;list()}
 function list(){let q=(document.getElementById('search')?.value||'').toLowerCase();let items=db.items.filter(x=>[x.id,x.material,x.color,x.brand,x.notes].join(' ').toLowerCase().includes(q)).sort((a,b)=>a.id.localeCompare(b.id));let el=document.getElementById('list');if(!items.length){el.innerHTML='<div class="empty">No matching filaments.<br><br>Tap <b>Add Filament</b> to register your first bag.</div>';return}el.innerHTML=items.map(x=>`<div class="card" onclick="go('?id=${encodeURIComponent(x.id)}')"><div class="row"><div class="dot" style="background:${cssColor(x.color)}"></div><div><div><span class="pill">${esc(x.material)}</span><b>${esc(x.color)}</b></div><div class="muted">${esc(x.brand||'Brand unknown')} · ${esc(x.id)}</div></div></div></div>`).join('')}
 function cssColor(c){return ({Black:'#111',White:'#fff',Red:'#e53935',Blue:'#2979ff',Green:'#43a047',Yellow:'#fdd835',Orange:'#fb8c00',Purple:'#8e24aa',Pink:'#ec407a',Grey:'#9e9e9e',Brown:'#795548',Gold:'#d4af37',Silver:'#c0c0c0',Copper:'#b87333',Natural:'#e6d3ad',Multicolour:'linear-gradient(90deg,#e33,#fd3,#3c6,#48f,#a5f)'}[c]||'#ddd')}
 function add(){editForm(null)}
+async function manageMaterials(){
+  await loadMaterials(); await loadColors();
+  document.getElementById('app').innerHTML=`<button class="back" onclick="go('')">‹ Back</button><div class="nav"><button class="button" onclick="showManager('materials')">Materials</button><button class="button secondary" onclick="showManager('colors')">Colours</button></div><div id="manager"></div>`;
+  showManager('materials')
+}
+function showManager(kind){
+  let isM=kind==='materials', list=isM?materials:colors, title=isM?'Materials':'Colours', placeholder=isM?'e.g. PETG-CF or PLA Wood':'e.g. Red/Gold or Rainbow';
+  document.getElementById('manager').innerHTML=`<div class="card"><h2>${title}</h2><p class="muted">Add or remove ${title.toLowerCase()} from your personal list. Changes are available on your PC and iPhone.</p><div class="field"><label>New ${isM?'material':'colour'}</label><input id="newEntry" maxlength="60" placeholder="${placeholder}"></div><button class="button" style="width:100%" onclick="addEntry('${kind}')">＋ Add ${isM?'Material':'Colour'}</button></div><div id="entryList"></div>`;
+  renderEntries(kind)
+}
+function renderEntries(kind){let list=kind==='materials'?materials:colors, el=document.getElementById('entryList');if(!el)return;el.innerHTML=list.map(v=>`<div class="card row" style="justify-content:space-between"><b>${esc(v)}</b><button class="button danger" style="padding:9px 12px;font-size:14px" onclick="removeEntry('${kind}',${JSON.stringify(v)})">Remove</button></div>`).join('')}
+async function addEntry(kind){let input=document.getElementById('newEntry'),name=input.value.trim();if(!name)return;let list=kind==='materials'?materials:colors;if(list.some(v=>v.toLowerCase()===name.toLowerCase())){alert('That entry is already in your list.');return}let table=kind==='materials'?'filament_materials':'filament_colors';let {error}=await supabaseClient.from(table).insert({name,user_id:currentUser.id});if(error){alert('Could not add '+(kind==='materials'?'material':'colour')+': '+error.message);return}input.value='';if(kind==='materials')await loadMaterials();else await loadColors();renderEntries(kind)}
+async function removeEntry(kind,name){if(!confirm(`Remove ${name} from the ${kind==='materials'?'material':'colour'} list? Existing filament records using it will not be changed.`))return;let table=kind==='materials'?'filament_materials':'filament_colors';let {error}=await supabaseClient.from(table).delete().eq('name',name).eq('user_id',currentUser.id);if(error){alert('Could not remove entry: '+error.message);return}if(kind==='materials')await loadMaterials();else await loadColors();renderEntries(kind)}
 function detail(x){document.getElementById('app').innerHTML=`<button class="back" onclick="go('')">‹ All filaments</button><div class="card record"><div class="hero">${esc(x.color)} ${esc(x.material)}</div><div class="muted">${esc(x.id)}</div><hr><p><b>Material</b><br>${esc(x.material)}</p><p><b>Colour</b><br>${esc(x.color)}</p><p><b>Brand</b><br>${esc(x.brand||'—')}</p>${x.photo?`<img class="photo" src="${x.photo}" alt="Spool photo">`:''}${x.notes?`<p><b>Notes</b><br>${esc(x.notes).replace(/\n/g,'<br>')}</p>`:''}<div class="actions"><button class="button" onclick="editForm(db.items.find(x=>x.id==='${x.id}'))">✏️ Edit</button><button class="button secondary" onclick="showUrl('${x.id}')">NFC URL</button></div></div>`}
 function detailMissing(id){document.getElementById('app').innerHTML=`<div class="card"><h2>${esc(id.toUpperCase())} not found</h2><p class="muted">The NFC tag opened this ID, but there is no matching record in your Filament Vault.</p><button class="button" onclick="addFor('${esc(id)}')">Create this record</button><button class="button secondary" style="margin-top:10px;width:100%" onclick="go('')">Back</button></div>`}
 function addFor(id){editForm({id:id.toUpperCase(),material:'Unknown',color:'Other',brand:'',notes:'',photo:''},true)}
-function editForm(x,isNew=false){x=x||{id:'FIL-'+String(nextId()).padStart(3,'0'),material:'PLA',color:'Black',brand:'',notes:'',photo:''};document.getElementById('app').innerHTML=`<button class="back" onclick="${x.id?`go('?id=${encodeURIComponent(x.id)}')`:`go('')`}">‹ Cancel</button><div class="card"><h2>${isNew?'Create':'Edit'} ${esc(x.id)}</h2><div class="field"><label>Material</label><select id="material" onchange="materialChanged()">${materials.map(v=>`<option ${v===x.material?'selected':''}>${v}</option>`).join('')}</select><input id="customMaterial" class="${materials.includes(x.material)?'hidden':''}" style="margin-top:8px" value="${materials.includes(x.material)?'':esc(x.material)}" placeholder="Enter your material" maxlength="60"></div><div class="field"><label>Colour</label><select id="color">${colors.map(v=>`<option ${v===x.color?'selected':''}>${v}</option>`).join('')}</select></div><div class="field"><label>Brand (optional)</label><input id="brand" value="${esc(x.brand)}" placeholder="e.g. eSUN"></div><div class="field"><label>Photo (optional)</label><input id="photoFile" type="file" accept="image/*" capture="environment" onchange="photoChanged(event)"><img id="preview" class="photo ${x.photo?'':'hidden'}" src="${x.photo||''}"></div><div class="field"><label>Notes (optional)</label><textarea id="notes" placeholder="Anything useful about this spool…">${esc(x.notes)}</textarea></div><button class="button" style="width:100%" onclick="saveForm('${esc(x.id)}')">Save Filament</button></div>`;window.pendingPhoto=x.photo||''}
+function editForm(x,isNew=false){x=x||{id:'FIL-'+String(nextId()).padStart(3,'0'),material:'PLA',color:'Black',brand:'',notes:'',photo:''};document.getElementById('app').innerHTML=`<button class="back" onclick="${x.id?`go('?id=${encodeURIComponent(x.id)}')`:`go('')`}">‹ Cancel</button><div class="card"><h2>${isNew?'Create':'Edit'} ${esc(x.id)}</h2><div class="field"><label>Material</label><select id="material" onchange="materialChanged()">${materials.map(v=>`<option ${v===x.material?'selected':''}>${esc(v)}</option>`).join('')}<option ${!materials.includes(x.material)?'selected':''}>Custom…</option></select><input id="customMaterial" class="${materials.includes(x.material)?'hidden':''}" style="margin-top:8px" value="${materials.includes(x.material)?'':esc(x.material)}" placeholder="Enter your material" maxlength="60"></div><div class="field"><label>Colour</label><select id="color">${colors.map(v=>`<option ${v===x.color?'selected':''}>${v}</option>`).join('')}</select></div><div class="field"><label>Brand (optional)</label><input id="brand" value="${esc(x.brand)}" placeholder="e.g. eSUN"></div><div class="field"><label>Photo (optional)</label><input id="photoFile" type="file" accept="image/*" capture="environment" onchange="photoChanged(event)"><img id="preview" class="photo ${x.photo?'':'hidden'}" src="${x.photo||''}"></div><div class="field"><label>Notes (optional)</label><textarea id="notes" placeholder="Anything useful about this spool…">${esc(x.notes)}</textarea></div><button class="button" style="width:100%" onclick="saveForm('${esc(x.id)}')">Save Filament</button></div>`;window.pendingPhoto=x.photo||''}
 function materialChanged(){let v=document.getElementById('material').value,p=document.getElementById('customMaterial');if(!p)return;let custom=v==='Custom…';p.classList.toggle('hidden',!custom);if(custom)p.focus()}
 function selectedMaterial(){let v=document.getElementById('material').value;return v==='Custom…'?(document.getElementById('customMaterial').value.trim()||'Unknown'):v}
 function nextId(){let nums=db.items.map(x=>parseInt(String(x.id).replace(/\D/g,''),10)).filter(Number.isFinite);return nums.length?Math.max(...nums)+1:1}
